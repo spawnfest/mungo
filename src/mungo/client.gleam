@@ -25,6 +25,7 @@ pub type Collection {
 
 pub fn connect(uri: String) -> Result(Database, Nil) {
   use info <- result.then(parse_connection_string(uri))
+
   case info {
     #(auth, [#(host, port)], db, auth_source) -> {
       use socket <- result.then(tcp.connect(host, port))
@@ -39,6 +40,20 @@ pub fn connect(uri: String) -> Result(Database, Nil) {
           Ok(Database(db, [Connection(socket, True)]))
         }
       }
+    }
+
+    #(option.None, hosts, db, _) -> {
+      use sockets <- result.then(list.try_map(
+        hosts,
+        fn(host) {
+          use socket <- result.then(tcp.connect(host.0, host.1))
+          Ok(Connection(socket, is_primary(socket, db)))
+        },
+      ))
+
+      sockets
+      |> Database(db, _)
+      |> Ok
     }
   }
 }
@@ -58,7 +73,7 @@ pub fn get_more(collection: Collection, id: Int, batch_size: Int) {
   )
 }
 
-const find_new_primary_errors = [189, 10_107, 13_435, 13_436, 10_058]
+const find_new_primary_errors = [189, 10_058, 10_107, 11_602, 13_435, 13_436]
 
 pub fn execute(
   collection: Collection,
