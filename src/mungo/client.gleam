@@ -1,3 +1,4 @@
+import gleam/int
 import gleam/uri
 import gleam/bool
 import gleam/list
@@ -10,18 +11,12 @@ import mungo/scram
 import bison/bson
 import bison.{decode, encode}
 
-pub opaque type ConnectionInfo {
-  ConnectionInfo(
-    host: String,
-    port: Int,
-    db: String,
-    auth: option.Option(#(String, String)),
-    auth_source: option.Option(String),
-  )
+pub opaque type Connection {
+  Connection(socket: tcp.Socket, primary: Bool)
 }
 
-pub type Database {
-  Database(socket: tcp.Socket, name: String)
+pub opaque type Database {
+  Database(name: String, connections: List(Connection))
 }
 
 pub type Collection {
@@ -31,17 +26,17 @@ pub type Collection {
 pub fn connect(uri: String) -> Result(Database, Nil) {
   use info <- result.then(parse_connection_string(uri))
   case info {
-    ConnectionInfo(host, port, db, auth, auth_source) -> {
+    #(auth, [#(host, port)], db, auth_source) -> {
       use socket <- result.then(tcp.connect(host, port))
       case auth {
-        option.None -> Ok(Database(socket, db))
+        option.None -> Ok(Database(db, [Connection(socket, True)]))
         option.Some(#(username, password)) -> {
           use _ <- result.then(case auth_source {
             option.None -> authenticate(socket, username, password, db)
             option.Some(source) ->
               authenticate(socket, username, password, source)
           })
-          Ok(Database(socket, db))
+          Ok(Database(db, [Connection(socket, True)]))
         }
       }
     }
@@ -63,22 +58,64 @@ pub fn get_more(collection: Collection, id: Int, batch_size: Int) {
   )
 }
 
+const find_new_primary_errors = [189, 10_107, 13_435, 13_436, 10_058]
+
 pub fn execute(
   collection: Collection,
   cmd: bson.Value,
 ) -> Result(List(#(String, bson.Value)), #(Int, String)) {
   case collection.db {
-    Database(socket, name) ->
+    Database(name, connections) -> {
+      let assert Ok(Connection(socket, True)) =
+        list.find(connections, fn(connection) { connection.primary })
+
       case send_cmd(socket, name, cmd) {
         Ok([
           #("ok", bson.Double(0.0)),
           #("errmsg", bson.Str(msg)),
           #("code", bson.Int32(code)),
           #("codeName", _),
-        ]) -> Error(#(code, msg))
+        ]) ->
+          case list.contains(find_new_primary_errors, code) {
+            True -> {
+              let assert Ok(Connection(socket, True)) =
+                list.find(
+                  connections,
+                  fn(connection) {
+                    is_primary(connection.socket, collection.db.name)
+                  },
+                )
+
+              case send_cmd(socket, name, cmd) {
+                Ok([
+                  #("ok", bson.Double(0.0)),
+                  #("errmsg", bson.Str(msg)),
+                  #("code", bson.Int32(code)),
+                  #("codeName", _),
+                ]) -> Error(#(code, msg))
+                Ok(result) -> Ok(result)
+                Error(Nil) -> Error(#(-2, ""))
+              }
+            }
+
+            False -> Error(#(code, msg))
+          }
+
         Ok(result) -> Ok(result)
         Error(Nil) -> Error(#(-2, ""))
       }
+    }
+  }
+}
+
+fn is_primary(socket: tcp.Socket, db: String) {
+  case send_cmd(socket, db, bson.Document([#("hello", bson.Int32(1))])) {
+    Ok(reply) ->
+      case list.key_find(reply, "isWritablePrimary") {
+        Ok(bson.Boolean(True)) -> True
+        _ -> False
+      }
+    Error(Nil) -> False
   }
 }
 
@@ -143,77 +180,64 @@ fn send_cmd(
   }
 }
 
-fn parse_connection_string(uri: String) -> Result(ConnectionInfo, Nil) {
-  use parsed <- result.then(uri.parse(uri))
-  use <- bool.guard(parsed.scheme != option.Some("mongodb"), Error(Nil))
-  use <- bool.guard(
-    option.is_none(parsed.host) || parsed.host == option.Some(""),
-    Error(Nil),
-  )
-  use <- bool.guard(list.contains(["", "/"], parsed.path), Error(Nil))
+pub fn parse_connection_string(uri: String) {
+  use <- bool.guard(!string.starts_with(uri, "mongodb://"), Error(Nil))
+  let uri = string.drop_left(uri, 10)
 
-  let assert option.Some(host) = parsed.host
-  let port = option.unwrap(parsed.port, 27_017)
-  let path = parsed.path
-  let [_, db] = string.split(path, "/")
-  use db <- result.then(uri.percent_decode(db))
-  use <- bool.guard(
-    option.is_none(parsed.userinfo),
-    Ok(ConnectionInfo(
-      host,
-      port,
-      db,
-      auth: option.None,
-      auth_source: option.None,
-    )),
-  )
-
-  let assert option.Some(userinfo) = parsed.userinfo
-  case string.split(userinfo, ":") {
-    ["", _] -> Error(Nil)
-    [_, ""] -> Error(Nil)
-    [username, password] ->
-      case
-        [username, password]
-        |> list.map(uri.percent_decode)
-      {
-        [Ok(username), Ok(password)] ->
-          case parsed.query {
-            option.Some(query) -> {
-              use opts <- result.then(uri.parse_query(query))
-              case list.key_find(opts, "authSource") {
-                Ok(auth_source) ->
-                  ConnectionInfo(
-                    host,
-                    port,
-                    db,
-                    auth: option.Some(#(username, password)),
-                    auth_source: option.Some(auth_source),
-                  )
-                  |> Ok
-                Error(Nil) ->
-                  ConnectionInfo(
-                    host,
-                    port,
-                    db,
-                    auth: option.Some(#(username, password)),
-                    auth_source: option.None,
-                  )
-                  |> Ok
-              }
-            }
-            option.None ->
-              ConnectionInfo(
-                host,
-                port,
-                db,
-                auth: option.Some(#(username, password)),
-                auth_source: option.None,
-              )
-              |> Ok
+  use #(auth, rest) <- result.then(case string.split_once(uri, "@") {
+    Ok(#(auth, rest)) ->
+      case string.split_once(auth, ":") {
+        Ok(#(username, password)) if username != "" && password != "" ->
+          case
+            [username, password]
+            |> list.map(uri.percent_decode)
+          {
+            [Ok(username), Ok(password)] ->
+              Ok(#(option.Some(#(username, password)), rest))
+            _ -> Error(Nil)
           }
         _ -> Error(Nil)
       }
+    Error(Nil) -> Ok(#(option.None, uri))
+  })
+
+  use #(hosts, db_and_options) <- result.then(string.split_once(rest, "/"))
+  use hosts <- result.then(
+    hosts
+    |> string.split(",")
+    |> list.map(fn(host) {
+      case string.starts_with(host, ":") {
+        True -> Error(Nil)
+        False -> Ok(host)
+      }
+    })
+    |> list.try_map(fn(host) {
+      case host {
+        Ok(host) -> {
+          case string.split_once(host, ":") {
+            Ok(#(host, port)) -> {
+              use port <- result.then(int.parse(port))
+              Ok(#(host, port))
+            }
+            Error(Nil) -> Ok(#(host, 27_017))
+          }
+        }
+        Error(Nil) -> Error(Nil)
+      }
+    }),
+  )
+
+  case string.split(db_and_options, "?") {
+    [db] if db != "" -> {
+      use db <- result.then(uri.percent_decode(db))
+      Ok(#(auth, hosts, db, option.None))
+    }
+
+    [db, "authSource=" <> auth_source] if db != "" -> {
+      use db <- result.then(uri.percent_decode(db))
+      Ok(#(auth, hosts, db, option.Some(auth_source)))
+    }
+
     _ -> Error(Nil)
   }
 }
