@@ -5,7 +5,85 @@ import gleam/bit_string
 pub type Socket
 
 pub type TCPError {
-  TCPError
+  // https://www.erlang.org/doc/man/inet#type-posix
+  Closed
+  Timeout
+  Eaddrinuse
+  Eaddrnotavail
+  Eafnosupport
+  Ealready
+  Econnaborted
+  Econnrefused
+  Econnreset
+  Edestaddrreq
+  Ehostdown
+  Ehostunreach
+  Einprogress
+  Eisconn
+  Emsgsize
+  Enetdown
+  Enetunreach
+  Enopkg
+  Enoprotoopt
+  Enotconn
+  Enotty
+  Enotsock
+  Eproto
+  Eprotonosupport
+  Eprototype
+  Esocktnosupport
+  Etimedout
+  Ewouldblock
+  Exbadport
+  Exbadseq
+  // https://www.erlang.org/doc/man/file#type-posix
+  Eacces
+  Eagain
+  Ebadf
+  Ebadmsg
+  Ebusy
+  Edeadlk
+  Edeadlock
+  Edquot
+  Eexist
+  Efault
+  Efbig
+  Eftype
+  Eintr
+  Einval
+  Eio
+  Eisdir
+  Eloop
+  Emfile
+  Emlink
+  Emultihop
+  Enametoolong
+  Enfile
+  Enobufs
+  Enodev
+  Enolck
+  Enolink
+  Enoent
+  Enomem
+  Enospc
+  Enosr
+  Enostr
+  Enosys
+  Enotblk
+  Enotdir
+  Enotsup
+  Enxio
+  Eopnotsupp
+  Eoverflow
+  Eperm
+  Epipe
+  Erange
+  Erofs
+  Espipe
+  Esrch
+  Estale
+  Etxtbsy
+  Exdev
 }
 
 type TCPOption {
