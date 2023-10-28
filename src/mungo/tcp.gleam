@@ -50,7 +50,7 @@ fn tcp_connect(
   ops: List(TCPOption),
 ) -> Result(Socket, TCPError)
 
-@external(erlang, "gen_tcp", "send")
+@external(erlang, "mungo_ffi", "tcp_send")
 fn tcp_send(socket: Socket, data: BitString) -> Result(Nil, TCPError)
 
 @external(erlang, "gen_tcp", "recv")
