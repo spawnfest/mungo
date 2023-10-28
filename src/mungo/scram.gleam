@@ -44,6 +44,7 @@ pub fn parse_first_reply(reply: List(#(String, bson.Value))) {
       #("done", bson.Boolean(False)),
       #("payload", bson.Binary(bson.Generic(data))),
       #("ok", bson.Double(1.0)),
+      ..
     ] -> {
       use data <- result.then(
         generic.to_string(data)
@@ -146,6 +147,7 @@ pub fn parse_second_reply(
       #("done", bson.Boolean(True)),
       #("payload", bson.Binary(bson.Generic(data))),
       #("ok", bson.Double(1.0)),
+      ..
     ] -> {
       use data <- result.then(
         generic.to_string(data)

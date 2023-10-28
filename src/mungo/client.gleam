@@ -28,27 +28,8 @@ pub fn connect(uri: String) -> Result(Database, error.MongoError) {
   use info <- result.then(parse_connection_string(uri))
 
   case info {
-    #(auth, [#(host, port)], db, auth_source) -> {
-      use socket <- result.then(
-        tcp.connect(host, port)
-        |> result.map_error(fn(error) { error.TCPError(error) }),
-      )
-
-      case auth {
-        option.None -> Ok(Database(db, [Connection(socket, True)]))
-        option.Some(#(username, password)) -> {
-          use _ <- result.then(case auth_source {
-            option.None -> authenticate(socket, username, password, db)
-            option.Some(source) ->
-              authenticate(socket, username, password, source)
-          })
-          Ok(Database(db, [Connection(socket, True)]))
-        }
-      }
-    }
-
-    #(option.None, hosts, db, _) -> {
-      use sockets <- result.then(list.try_map(
+    #(auth, hosts, db) -> {
+      use connections <- result.then(list.try_map(
         hosts,
         fn(host) {
           use socket <- result.then(
@@ -60,9 +41,22 @@ pub fn connect(uri: String) -> Result(Database, error.MongoError) {
         },
       ))
 
-      sockets
-      |> Database(db, _)
-      |> Ok
+      let assert Ok(Connection(primary_socket, _)) =
+        list.find(connections, fn(connection) { connection.primary })
+
+      case auth {
+        option.None -> Ok(Database(db, connections))
+        option.Some(#(username, password, auth_source)) -> {
+          use _ <- result.then(authenticate(
+            primary_socket,
+            username,
+            password,
+            auth_source,
+          ))
+
+          Ok(Database(db, connections))
+        }
+      }
     }
   }
 }
@@ -293,7 +287,12 @@ pub fn parse_connection_string(uri: String) {
         uri.percent_decode(db)
         |> result.map_error(fn(_) { error.ConnectionStringError }),
       )
-      Ok(#(auth, hosts, db, option.None))
+      Ok(#(
+        auth
+        |> option.map(fn(auth) { #(auth.0, auth.1, db) }),
+        hosts,
+        db,
+      ))
     }
 
     [db, "authSource=" <> auth_source] if db != "" -> {
@@ -301,7 +300,12 @@ pub fn parse_connection_string(uri: String) {
         uri.percent_decode(db)
         |> result.map_error(fn(_) { error.ConnectionStringError }),
       )
-      Ok(#(auth, hosts, db, option.Some(auth_source)))
+      Ok(#(
+        auth
+        |> option.map(fn(auth) { #(auth.0, auth.1, auth_source) }),
+        hosts,
+        db,
+      ))
     }
 
     _ -> Error(error.ConnectionStringError)

@@ -44,6 +44,28 @@ mongosh --port 1024
 > rs.add('lady')
 ```
 
+### Replica Set with authentication
+
+If you want to test with a replica set that has authentication enabled, create the the replica set like below:
+```
+cd replset
+./init.sh
+```
+
+The nodes will have `spawn` as username and `fest` as password.
+Finally you can use `mongosh` to connect to any of the nodes, initialize the replica set and add the other nodes:
+```
+mongosh --port 2048
+```
+
+```
+> use admin
+> db.auth('spawn', 'fest')
+> rs.initiate()
+> rs.add('dante')
+> rs.add('lady')
+```
+
 ## Usage
 
 ```gleam
