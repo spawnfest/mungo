@@ -3,18 +3,11 @@
 [![Package Version](https://img.shields.io/hexpm/v/mungo)](https://hex.pm/packages/mungo)
 [![Hex Docs](https://img.shields.io/badge/hex-docs-ffaff3)](https://hexdocs.pm/mungo/)
 
-# mungo (formerly gleam_mongo)
+# mungo
 > mungo: a felted fabric made from the shredded fibre of repurposed woollen cloth
 ---
 
-
 A mongodb driver for gleam
-
-## Quick start
-
-```sh
-gleam shell # Run an Erlang shell
-```
 
 ## Installation
 
@@ -22,20 +15,34 @@ gleam shell # Run an Erlang shell
 gleam add mungo
 ```
 
-## Roadmap
+## SpawnFest 2023
 
-- [x] support basic mongodb commands
-- [x] support aggregation
-- [x] support connection strings
-- [x] support authentication
-- [x] support mongodb cursors
-- [ ] support connection pooling
-- [ ] support tls
-- [ ] support clusters
-- [ ] support bulk operations
-- [ ] support transactions
-- [ ] support change streams
-- [ ] support other mongodb commands
+As should already be clear, this is an already existing package. As far as SpawnFest 2023 is concerned, the goal is to be able to perform all of the already supported commands against a mongodb replica set as a first step for supporting more general mongodb cluster topologies.
+
+I also think it's appropriate to explain my mongodb cluster setup to help other people replicate my results. I'll use a mongodb replica set created using [podman](https://podman.io) and the [latest official mongodb docker image](https://hub.docker.com/_/mongo).
+
+The first step is to create a podman network:
+```
+podman network create replset-network
+```
+
+Then we need to create at least three nodes(port mappings are only for accessing the nodes from the host):
+```
+podman run -d -p 1024:27017 --name dante  --net replset-network mongo:latest --replSet spawnfest-replset
+podman run -d -p 2048:27017 --name vergil --net replset-network mongo:latest --replSet spawnfest-replset
+podman run -d -p 4096:27017 --name lady   --net replset-network mongo:latest --replSet spawnfest-replset
+```
+
+Finally you can use `mongosh` to connect to any of the nodes, initialize the replica set and add the other nodes:
+```
+mongosh --port 1024
+```
+
+```
+> rs.initiate()
+> rs.add('vergil')
+> rs.add('lady')
+```
 
 ## Usage
 
