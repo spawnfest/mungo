@@ -1,7 +1,7 @@
 import gleam/list
 import gleam/option
 import gleam/iterator
-import mungo/utils
+import mungo/error
 import mungo/client
 import bison/bson
 
@@ -69,19 +69,16 @@ fn to_list_internal(cursor, storage) {
   }
 }
 
-fn get_more(cursor: Cursor) -> Result(Cursor, utils.MongoError) {
+fn get_more(cursor: Cursor) -> Result(Cursor, error.MongoError) {
   case client.get_more(cursor.collection, cursor.id, cursor.batch_size) {
     Ok(result) -> {
-      let [#("cursor", bson.Document(result)), #("ok", ok)] = result
+      let [#("cursor", bson.Document(result)), ..] = result
       let assert Ok(bson.Int64(id)) = list.key_find(result, "id")
       let assert Ok(bson.Array(batch)) = list.key_find(result, "nextBatch")
-      case ok {
-        bson.Double(1.0) ->
-          new(cursor.collection, id, batch)
-          |> Ok
-        _ -> Error(utils.default_error)
-      }
+      new(cursor.collection, id, batch)
+      |> Ok
     }
-    Error(#(code, msg)) -> Error(utils.MongoError(code, msg, source: bson.Null))
+
+    Error(error) -> Error(error)
   }
 }

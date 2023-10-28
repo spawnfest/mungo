@@ -6,6 +6,7 @@ import gleam/string
 import gleam/crypto
 import gleam/bit_string
 import gleam/bitwise.{exclusive_or as bxor}
+import mungo/error
 import bison/bson
 import bison/generic
 
@@ -35,7 +36,8 @@ pub fn first_message(payload) {
 
 pub fn parse_first_reply(reply: List(#(String, bson.Value))) {
   case reply {
-    [#("ok", bson.Double(0.0)), ..] -> Error(Nil)
+    [#("ok", bson.Double(0.0)), ..] ->
+      Error(error.ServerError(error.AuthenticationFailed("")))
 
     [
       #("conversationId", bson.Int32(cid)),
@@ -43,7 +45,12 @@ pub fn parse_first_reply(reply: List(#(String, bson.Value))) {
       #("payload", bson.Binary(bson.Generic(data))),
       #("ok", bson.Double(1.0)),
     ] -> {
-      use data <- result.then(generic.to_string(data))
+      use data <- result.then(
+        generic.to_string(data)
+        |> result.map_error(fn(_) {
+          error.ServerError(error.AuthenticationFailed(""))
+        }),
+      )
       use [#("r", rnonce), #("s", salt), #("i", i)] <- result.then(parse_payload(
         data,
       ))
@@ -51,9 +58,9 @@ pub fn parse_first_reply(reply: List(#(String, bson.Value))) {
         Ok(iterations) ->
           case iterations >= 4096 {
             True -> Ok(#(#(rnonce, salt, iterations), data, cid))
-            False -> Error(Nil)
+            False -> Error(error.ServerError(error.AuthenticationFailed("")))
           }
-        Error(Nil) -> Error(Nil)
+        Error(Nil) -> Error(error.ServerError(error.AuthenticationFailed("")))
       }
     }
   }
@@ -68,7 +75,12 @@ pub fn second_message(
 ) {
   let #(rnonce, salt, iterations) = server_params
 
-  use salt <- result.then(base.decode64(salt))
+  use salt <- result.then(
+    base.decode64(salt)
+    |> result.map_error(fn(_) {
+      error.ServerError(error.AuthenticationFailed(""))
+    }),
+  )
 
   let salted_password = hi(password, salt, iterations)
 
@@ -126,7 +138,8 @@ pub fn parse_second_reply(
   server_signature: BitString,
 ) {
   case reply {
-    [#("ok", bson.Double(0.0)), ..] -> Error(Nil)
+    [#("ok", bson.Double(0.0)), ..] ->
+      Error(error.ServerError(error.AuthenticationFailed("")))
 
     [
       #("conversationId", _),
@@ -134,16 +147,29 @@ pub fn parse_second_reply(
       #("payload", bson.Binary(bson.Generic(data))),
       #("ok", bson.Double(1.0)),
     ] -> {
-      use data <- result.then(generic.to_string(data))
+      use data <- result.then(
+        generic.to_string(data)
+        |> result.map_error(fn(_) {
+          error.ServerError(error.AuthenticationFailed(""))
+        }),
+      )
+
       use [#("v", data)] <- result.then(parse_payload(data))
-      use received_signature <- result.then(base.decode64(data))
+
+      use received_signature <- result.then(
+        base.decode64(data)
+        |> result.map_error(fn(_) {
+          error.ServerError(error.AuthenticationFailed(""))
+        }),
+      )
+
       case
         bit_string.byte_size(server_signature) == bit_string.byte_size(
           received_signature,
         ) && crypto.secure_compare(server_signature, received_signature)
       {
         True -> Ok(Nil)
-        False -> Error(Nil)
+        False -> Error(error.ServerError(error.AuthenticationFailed("")))
       }
     }
   }
@@ -153,6 +179,9 @@ fn parse_payload(payload: String) {
   payload
   |> string.split(",")
   |> list.try_map(fn(item) { string.split_once(item, "=") })
+  |> result.map_error(fn(_) {
+    error.ServerError(error.AuthenticationFailed(""))
+  })
 }
 
 fn clean_username(username: String) {

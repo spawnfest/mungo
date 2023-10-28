@@ -3,11 +3,12 @@ import gleam/uri
 import gleam/bool
 import gleam/list
 import gleam/string
-import gleam/option
 import gleam/result
+import gleam/option
 import gleam/bit_string
 import mungo/tcp
 import mungo/scram
+import mungo/error
 import bison/bson
 import bison.{decode, encode}
 
@@ -23,12 +24,16 @@ pub type Collection {
   Collection(db: Database, name: String)
 }
 
-pub fn connect(uri: String) -> Result(Database, Nil) {
+pub fn connect(uri: String) -> Result(Database, error.MongoError) {
   use info <- result.then(parse_connection_string(uri))
 
   case info {
     #(auth, [#(host, port)], db, auth_source) -> {
-      use socket <- result.then(tcp.connect(host, port))
+      use socket <- result.then(
+        tcp.connect(host, port)
+        |> result.map_error(fn(error) { error.TCPError(error) }),
+      )
+
       case auth {
         option.None -> Ok(Database(db, [Connection(socket, True)]))
         option.Some(#(username, password)) -> {
@@ -46,7 +51,11 @@ pub fn connect(uri: String) -> Result(Database, Nil) {
       use sockets <- result.then(list.try_map(
         hosts,
         fn(host) {
-          use socket <- result.then(tcp.connect(host.0, host.1))
+          use socket <- result.then(
+            tcp.connect(host.0, host.1)
+            |> result.map_error(fn(error) { error.TCPError(error) }),
+          )
+
           Ok(Connection(socket, is_primary(socket, db)))
         },
       ))
@@ -73,12 +82,10 @@ pub fn get_more(collection: Collection, id: Int, batch_size: Int) {
   )
 }
 
-const find_new_primary_errors = [189, 10_058, 10_107, 11_602, 13_435, 13_436]
-
 pub fn execute(
   collection: Collection,
   cmd: List(#(String, bson.Value)),
-) -> Result(List(#(String, bson.Value)), #(Int, String)) {
+) -> Result(List(#(String, bson.Value)), error.MongoError) {
   case collection.db {
     Database(name, connections) -> {
       let assert Ok(Connection(socket, True)) =
@@ -90,34 +97,62 @@ pub fn execute(
           #("errmsg", bson.Str(msg)),
           #("code", bson.Int32(code)),
           #("codeName", _),
-        ]) ->
-          case list.contains(find_new_primary_errors, code) {
-            True -> {
-              let assert Ok(Connection(socket, True)) =
-                list.find(
-                  connections,
-                  fn(connection) {
-                    is_primary(connection.socket, collection.db.name)
-                  },
-                )
+        ]) -> {
+          let assert Ok(error) = list.key_find(error.code_to_server_error, code)
+          let error = error(msg)
 
-              case send_cmd(socket, name, cmd) {
-                Ok([
-                  #("ok", bson.Double(0.0)),
-                  #("errmsg", bson.Str(msg)),
-                  #("code", bson.Int32(code)),
-                  #("codeName", _),
-                ]) -> Error(#(code, msg))
-                Ok(result) -> Ok(result)
-                Error(Nil) -> Error(#(-2, ""))
+          case error.is_retriable_error(error) {
+            True ->
+              case error.is_not_primary_error(error) {
+                True -> {
+                  let assert Ok(Connection(socket, True)) =
+                    list.find(
+                      connections,
+                      fn(connection) {
+                        is_primary(connection.socket, collection.db.name)
+                      },
+                    )
+
+                  case send_cmd(socket, name, cmd) {
+                    Ok([
+                      #("ok", bson.Double(0.0)),
+                      #("errmsg", bson.Str(msg)),
+                      #("code", bson.Int32(code)),
+                      #("codeName", _),
+                    ]) -> {
+                      let assert Ok(error) =
+                        list.key_find(error.code_to_server_error, code)
+                      Error(error.ServerError(error(msg)))
+                    }
+
+                    Ok(result) -> Ok(result)
+                    Error(error) -> Error(error)
+                  }
+                }
+
+                False ->
+                  case send_cmd(socket, name, cmd) {
+                    Ok([
+                      #("ok", bson.Double(0.0)),
+                      #("errmsg", bson.Str(msg)),
+                      #("code", bson.Int32(code)),
+                      #("codeName", _),
+                    ]) -> {
+                      let assert Ok(error) =
+                        list.key_find(error.code_to_server_error, code)
+                      Error(error.ServerError(error(msg)))
+                    }
+
+                    Ok(result) -> Ok(result)
+                    Error(error) -> Error(error)
+                  }
               }
-            }
-
-            False -> Error(#(code, msg))
+            False -> Error(error.ServerError(error))
           }
+        }
 
         Ok(result) -> Ok(result)
-        Error(Nil) -> Error(#(-2, ""))
+        Error(error) -> Error(error)
       }
     }
   }
@@ -130,7 +165,7 @@ fn is_primary(socket: tcp.Socket, db: String) {
         Ok(bson.Boolean(True)) -> True
         _ -> False
       }
-    Error(Nil) -> False
+    Error(_) -> False
   }
 }
 
@@ -161,7 +196,8 @@ fn authenticate(
   use reply <- result.then(send_cmd(socket, auth_source, second))
 
   case reply {
-    [#("ok", bson.Double(0.0)), ..] -> Error(Nil)
+    [#("ok", bson.Double(0.0)), ..] ->
+      Error(error.ServerError(error.AuthenticationFailed("")))
     reply -> scram.parse_second_reply(reply, server_signature)
   }
 }
@@ -170,7 +206,7 @@ fn send_cmd(
   socket: tcp.Socket,
   db: String,
   cmd: List(#(String, bson.Value)),
-) -> Result(List(#(String, bson.Value)), Nil) {
+) -> Result(List(#(String, bson.Value)), error.MongoError) {
   let cmd = list.key_set(cmd, "$db", bson.Str(db))
   let encoded = encode(cmd)
   let size = bit_string.byte_size(encoded) + 21
@@ -178,24 +214,28 @@ fn send_cmd(
   let packet =
     [<<size:32-little, 0:32, 0:32, 2013:32-little, 0:32, 0>>, encoded]
     |> bit_string.concat
+
   case tcp.send(socket, packet) {
-    tcp.OK ->
+    Ok(_) ->
       case tcp.receive(socket) {
         Ok(response) -> {
           let <<_:168, rest:bit_string>> = response
           case decode(rest) {
             Ok(result) -> Ok(result)
-            Error(Nil) -> Error(Nil)
+            Error(Nil) -> Error(error.BSONError)
           }
         }
-        Error(Nil) -> Error(Nil)
+        Error(tcp_error) -> Error(error.TCPError(tcp_error))
       }
-    _ -> Error(Nil)
+    Error(tcp_error) -> Error(error.TCPError(tcp_error))
   }
 }
 
 pub fn parse_connection_string(uri: String) {
-  use <- bool.guard(!string.starts_with(uri, "mongodb://"), Error(Nil))
+  use <- bool.guard(
+    !string.starts_with(uri, "mongodb://"),
+    Error(error.ConnectionStringError),
+  )
   let uri = string.drop_left(uri, 10)
 
   use #(auth, rest) <- result.then(case string.split_once(uri, "@") {
@@ -208,20 +248,23 @@ pub fn parse_connection_string(uri: String) {
           {
             [Ok(username), Ok(password)] ->
               Ok(#(option.Some(#(username, password)), rest))
-            _ -> Error(Nil)
+            _ -> Error(error.ConnectionStringError)
           }
-        _ -> Error(Nil)
+        _ -> Error(error.ConnectionStringError)
       }
     Error(Nil) -> Ok(#(option.None, uri))
   })
 
-  use #(hosts, db_and_options) <- result.then(string.split_once(rest, "/"))
+  use #(hosts, db_and_options) <- result.then(
+    string.split_once(rest, "/")
+    |> result.map_error(fn(_) { error.ConnectionStringError }),
+  )
   use hosts <- result.then(
     hosts
     |> string.split(",")
     |> list.map(fn(host) {
       case string.starts_with(host, ":") {
-        True -> Error(Nil)
+        True -> Error(error.ConnectionStringError)
         False -> Ok(host)
       }
     })
@@ -230,28 +273,37 @@ pub fn parse_connection_string(uri: String) {
         Ok(host) -> {
           case string.split_once(host, ":") {
             Ok(#(host, port)) -> {
-              use port <- result.then(int.parse(port))
+              use port <- result.then(
+                int.parse(port)
+                |> result.map_error(fn(_) { error.ConnectionStringError }),
+              )
               Ok(#(host, port))
             }
             Error(Nil) -> Ok(#(host, 27_017))
           }
         }
-        Error(Nil) -> Error(Nil)
+        Error(error) -> Error(error)
       }
     }),
   )
 
   case string.split(db_and_options, "?") {
     [db] if db != "" -> {
-      use db <- result.then(uri.percent_decode(db))
+      use db <- result.then(
+        uri.percent_decode(db)
+        |> result.map_error(fn(_) { error.ConnectionStringError }),
+      )
       Ok(#(auth, hosts, db, option.None))
     }
 
     [db, "authSource=" <> auth_source] if db != "" -> {
-      use db <- result.then(uri.percent_decode(db))
+      use db <- result.then(
+        uri.percent_decode(db)
+        |> result.map_error(fn(_) { error.ConnectionStringError }),
+      )
       Ok(#(auth, hosts, db, option.Some(auth_source)))
     }
 
-    _ -> Error(Nil)
+    _ -> Error(error.ConnectionStringError)
   }
 }

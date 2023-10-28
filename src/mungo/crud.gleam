@@ -1,7 +1,7 @@
 import gleam/list
 import gleam/pair
 import gleam/option
-import mungo/utils
+import mungo/error
 import mungo/cursor
 import mungo/client
 import bison/bson
@@ -44,7 +44,7 @@ pub fn find_by_id(collection, id) {
     Ok(id) ->
       collection
       |> find_one([#("_id", bson.ObjectId(id))], [])
-    Error(Nil) -> Error(utils.default_error)
+    Error(_) -> Error(error.BSONError)
   }
 }
 
@@ -124,12 +124,8 @@ pub fn count_all(collection: client.Collection) {
     collection
     |> client.execute([#("count", bson.Str(collection.name))])
   {
-    Ok([#("n", bson.Int32(n)), #("ok", ok)]) ->
-      case ok {
-        bson.Double(1.0) -> Ok(n)
-        _ -> Error(utils.default_error)
-      }
-    Error(#(code, msg)) -> Error(utils.MongoError(code, msg, source: bson.Null))
+    Ok([#("n", bson.Int32(n)), ..]) -> Ok(n)
+    Error(error) -> Error(error)
   }
 }
 
@@ -141,19 +137,15 @@ pub fn count(collection: client.Collection, filter: List(#(String, bson.Value)))
       #("query", bson.Document(filter)),
     ])
   {
-    Ok([#("n", bson.Int32(n)), #("ok", ok)]) ->
-      case ok {
-        bson.Double(1.0) -> Ok(n)
-        _ -> Error(utils.default_error)
-      }
-    Error(#(code, msg)) -> Error(utils.MongoError(code, msg, source: bson.Null))
+    Ok([#("n", bson.Int32(n)), ..]) -> Ok(n)
+    Error(error) -> Error(error)
   }
 }
 
 pub fn insert_many(
   collection: client.Collection,
   docs: List(List(#(String, bson.Value))),
-) -> Result(InsertResult, utils.MongoError) {
+) -> Result(InsertResult, error.MongoError) {
   let docs =
     list.map(
       docs,
@@ -192,31 +184,25 @@ pub fn insert_many(
       #("documents", bson.Array(docs)),
     ])
   {
-    Ok([#("n", bson.Int32(n)), #("ok", ok)]) ->
-      case ok {
-        bson.Double(1.0) -> Ok(InsertResult(n, inserted_ids))
-        _ -> Error(utils.default_error)
-      }
+    Ok([#("n", bson.Int32(n)), ..]) -> Ok(InsertResult(n, inserted_ids))
 
-    Ok([#("n", _), #("writeErrors", bson.Array(errors)), #("ok", ok)]) ->
-      case ok {
-        bson.Double(1.0) -> {
-          let assert Ok(error) = list.first(errors)
-          case error {
-            bson.Document([
-              #("index", _),
-              #("code", bson.Int32(code)),
-              #("keyPattern", _),
-              #("keyValue", source),
-              #("errmsg", bson.Str(msg)),
-            ]) -> Error(utils.MongoError(code, msg, source))
-            _ -> Error(utils.default_error)
-          }
-        }
+    Ok([#("n", _), #("writeErrors", bson.Array(errors)), ..]) -> {
+      Error(error.WriteErrors(
+        errors
+        |> list.map(fn(error) {
+          let assert bson.Document([
+            #("index", _),
+            #("code", bson.Int32(code)),
+            #("keyPattern", _),
+            #("keyValue", source),
+            #("errmsg", bson.Str(msg)),
+          ]) = error
+          error.WriteError(code, msg, source)
+        }),
+      ))
+    }
 
-        _ -> Error(utils.default_error)
-      }
-    Error(#(code, msg)) -> Error(utils.MongoError(code, msg, source: bson.Null))
+    Error(error) -> Error(error)
   }
 }
 
@@ -245,17 +231,15 @@ fn find(
     |> client.execute(body)
   {
     Ok(result) -> {
-      let [#("cursor", bson.Document(result)), #("ok", ok)] = result
+      let [#("cursor", bson.Document(result)), ..] = result
       let assert Ok(bson.Int64(id)) = list.key_find(result, "id")
       let assert Ok(bson.Array(batch)) = list.key_find(result, "firstBatch")
-      case ok {
-        bson.Double(1.0) ->
-          cursor.new(collection, id, batch)
-          |> Ok
-        _ -> Error(utils.default_error)
-      }
+
+      cursor.new(collection, id, batch)
+      |> Ok
     }
-    Error(#(code, msg)) -> Error(utils.MongoError(code, msg, source: bson.Null))
+
+    Error(error) -> Error(error)
   }
 }
 
@@ -294,15 +278,9 @@ fn update(
       #("updates", bson.Array([update])),
     ])
   {
-    Ok([
-      #("n", bson.Int32(n)),
-      #("nModified", bson.Int32(modified)),
-      #("ok", ok),
-    ]) ->
-      case ok {
-        bson.Double(1.0) -> Ok(UpdateResult(n, modified))
-        _ -> Error(utils.default_error)
-      }
+    Ok([#("n", bson.Int32(n)), #("nModified", bson.Int32(modified)), ..]) ->
+      Ok(UpdateResult(n, modified))
+
     Ok([
       #("n", bson.Int32(n)),
       #(
@@ -310,35 +288,25 @@ fn update(
         bson.Array([bson.Document([#("index", _), #("_id", upserted)])]),
       ),
       #("nModified", _),
-      #("ok", ok),
-    ]) ->
-      case ok {
-        bson.Double(1.0) -> Ok(UpsertResult(n, upserted))
-        _ -> Error(utils.default_error)
-      }
-    Ok([
-      #("n", _),
-      #("writeErrors", bson.Array(errors)),
-      #("nModified", _),
-      #("ok", ok),
-    ]) ->
-      case ok {
-        bson.Double(1.0) -> {
-          let assert Ok(error) = list.first(errors)
-          case error {
-            bson.Document([
-              #("index", _),
-              #("code", bson.Int32(code)),
-              #("keyPattern", _),
-              #("keyValue", source),
-              #("errmsg", bson.Str(msg)),
-            ]) -> Error(utils.MongoError(code, msg, source))
-            _ -> Error(utils.default_error)
-          }
-        }
-        _ -> Error(utils.default_error)
-      }
-    Error(#(code, msg)) -> Error(utils.MongoError(code, msg, source: bson.Null))
+      ..
+    ]) -> Ok(UpsertResult(n, upserted))
+
+    Ok([#("n", _), #("writeErrors", bson.Array(errors)), #("nModified", _), ..]) ->
+      Error(error.WriteErrors(
+        errors
+        |> list.map(fn(error) {
+          let assert bson.Document([
+            #("index", _),
+            #("code", bson.Int32(code)),
+            #("keyPattern", _),
+            #("keyValue", source),
+            #("errmsg", bson.Str(msg)),
+          ]) = error
+          error.WriteError(code, msg, source)
+        }),
+      ))
+
+    Error(error) -> Error(error)
   }
 }
 
@@ -368,28 +336,23 @@ fn delete(
       ),
     ])
   {
-    Ok([#("n", bson.Int32(n)), #("ok", ok)]) ->
-      case ok {
-        bson.Double(1.0) -> Ok(n)
-        _ -> Error(utils.default_error)
-      }
-    Ok([#("n", _), #("writeErrors", bson.Array(errors)), #("ok", ok)]) ->
-      case ok {
-        bson.Double(1.0) -> {
-          let assert Ok(error) = list.first(errors)
-          case error {
-            bson.Document([
-              #("index", _),
-              #("code", bson.Int32(code)),
-              #("keyPattern", _),
-              #("keyValue", source),
-              #("errmsg", bson.Str(msg)),
-            ]) -> Error(utils.MongoError(code, msg, source))
-            _ -> Error(utils.default_error)
-          }
-        }
-        _ -> Error(utils.default_error)
-      }
-    Error(#(code, msg)) -> Error(utils.MongoError(code, msg, source: bson.Null))
+    Ok([#("n", bson.Int32(n)), ..]) -> Ok(n)
+
+    Ok([#("n", _), #("writeErrors", bson.Array(errors)), ..]) ->
+      Error(error.WriteErrors(
+        errors
+        |> list.map(fn(error) {
+          let assert bson.Document([
+            #("index", _),
+            #("code", bson.Int32(code)),
+            #("keyPattern", _),
+            #("keyValue", source),
+            #("errmsg", bson.Str(msg)),
+          ]) = error
+          error.WriteError(code, msg, source)
+        }),
+      ))
+
+    Error(error) -> Error(error)
   }
 }

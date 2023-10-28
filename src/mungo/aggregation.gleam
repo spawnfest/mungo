@@ -4,7 +4,6 @@ import gleam/list
 import gleam/queue
 import mungo/client
 import mungo/cursor
-import mungo/utils.{MongoError, default_error}
 import bison/bson
 
 pub opaque type Pipeline {
@@ -179,19 +178,17 @@ pub fn to_cursor(pipeline: Pipeline) {
 
   case client.execute(pipeline.collection, body) {
     Ok(result) -> {
-      let [#("cursor", bson.Document(result)), #("ok", ok)] = result
+      let [#("cursor", bson.Document(result)), ..] = result
       let [
         #("firstBatch", bson.Array(batch)),
         #("id", bson.Int64(id)),
         #("ns", _),
       ] = result
-      case ok {
-        bson.Double(1.0) ->
-          cursor.new(pipeline.collection, id, batch)
-          |> Ok
-        _ -> Error(default_error)
-      }
+
+      cursor.new(pipeline.collection, id, batch)
+      |> Ok
     }
-    Error(#(code, msg)) -> Error(MongoError(code, msg, source: bson.Null))
+
+    Error(error) -> Error(error)
   }
 }
