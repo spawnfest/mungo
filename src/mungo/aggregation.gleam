@@ -177,7 +177,7 @@ pub fn to_cursor(pipeline: Pipeline) {
       },
     )
 
-  case client.execute(pipeline.collection, bson.Document(body)) {
+  case client.execute(pipeline.collection, body) {
     Ok(result) -> {
       let [#("cursor", bson.Document(result)), #("ok", ok)] = result
       let [

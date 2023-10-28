@@ -122,7 +122,7 @@ pub fn delete_many(
 pub fn count_all(collection: client.Collection) {
   case
     collection
-    |> client.execute(bson.Document([#("count", bson.Str(collection.name))]))
+    |> client.execute([#("count", bson.Str(collection.name))])
   {
     Ok([#("n", bson.Int32(n)), #("ok", ok)]) ->
       case ok {
@@ -136,10 +136,10 @@ pub fn count_all(collection: client.Collection) {
 pub fn count(collection: client.Collection, filter: List(#(String, bson.Value))) {
   case
     collection
-    |> client.execute(bson.Document([
+    |> client.execute([
       #("count", bson.Str(collection.name)),
       #("query", bson.Document(filter)),
-    ]))
+    ])
   {
     Ok([#("n", bson.Int32(n)), #("ok", ok)]) ->
       case ok {
@@ -187,10 +187,10 @@ pub fn insert_many(
 
   case
     collection
-    |> client.execute(bson.Document([
+    |> client.execute([
       #("insert", bson.Str(collection.name)),
       #("documents", bson.Array(docs)),
-    ]))
+    ])
   {
     Ok([#("n", bson.Int32(n)), #("ok", ok)]) ->
       case ok {
@@ -242,7 +242,7 @@ fn find(
     )
   case
     collection
-    |> client.execute(bson.Document(body))
+    |> client.execute(body)
   {
     Ok(result) -> {
       let [#("cursor", bson.Document(result)), #("ok", ok)] = result
@@ -289,10 +289,10 @@ fn update(
     |> bson.Document
   case
     collection
-    |> client.execute(bson.Document([
+    |> client.execute([
       #("update", bson.Str(collection.name)),
       #("updates", bson.Array([update])),
-    ]))
+    ])
   {
     Ok([
       #("n", bson.Int32(n)),
@@ -349,7 +349,7 @@ fn delete(
 ) {
   case
     collection
-    |> client.execute(bson.Document([
+    |> client.execute([
       #("delete", bson.Str(collection.name)),
       #(
         "deletes",
@@ -366,7 +366,7 @@ fn delete(
           ]),
         ]),
       ),
-    ]))
+    ])
   {
     Ok([#("n", bson.Int32(n)), #("ok", ok)]) ->
       case ok {

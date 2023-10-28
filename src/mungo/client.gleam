@@ -50,11 +50,11 @@ pub fn collection(db: Database, name: String) -> Collection {
 pub fn get_more(collection: Collection, id: Int, batch_size: Int) {
   execute(
     collection,
-    bson.Document([
+    [
       #("getMore", bson.Int64(id)),
       #("collection", bson.Str(collection.name)),
       #("batchSize", bson.Int32(batch_size)),
-    ]),
+    ],
   )
 }
 
@@ -62,7 +62,7 @@ const find_new_primary_errors = [189, 10_107, 13_435, 13_436, 10_058]
 
 pub fn execute(
   collection: Collection,
-  cmd: bson.Value,
+  cmd: List(#(String, bson.Value)),
 ) -> Result(List(#(String, bson.Value)), #(Int, String)) {
   case collection.db {
     Database(name, connections) -> {
@@ -109,7 +109,7 @@ pub fn execute(
 }
 
 fn is_primary(socket: tcp.Socket, db: String) {
-  case send_cmd(socket, db, bson.Document([#("hello", bson.Int32(1))])) {
+  case send_cmd(socket, db, [#("hello", bson.Int32(1))]) {
     Ok(reply) ->
       case list.key_find(reply, "isWritablePrimary") {
         Ok(bson.Boolean(True)) -> True
@@ -154,9 +154,8 @@ fn authenticate(
 fn send_cmd(
   socket: tcp.Socket,
   db: String,
-  cmd: bson.Value,
+  cmd: List(#(String, bson.Value)),
 ) -> Result(List(#(String, bson.Value)), Nil) {
-  let assert bson.Document(cmd) = cmd
   let cmd = list.key_set(cmd, "$db", bson.Str(db))
   let encoded = encode(cmd)
   let size = bit_string.byte_size(encoded) + 21

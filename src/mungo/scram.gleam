@@ -24,13 +24,13 @@ pub fn first_message(payload) {
     |> string.concat
     |> generic.from_string
 
-  bson.Document([
+  [
     #("saslStart", bson.Boolean(True)),
     #("mechanism", bson.Str("SCRAM-SHA-256")),
     #("payload", bson.Binary(bson.Generic(payload))),
     #("autoAuthorize", bson.Boolean(True)),
     #("options", bson.Document([#("skipEmptyExchange", bson.Boolean(True))])),
-  ])
+  ]
 }
 
 pub fn parse_first_reply(reply: List(#(String, bson.Value))) {
@@ -111,11 +111,11 @@ pub fn second_message(
     crypto.hmac(generic.to_bit_string(auth_message), crypto.Sha256, server_key)
 
   #(
-    bson.Document([
+    [
       #("saslContinue", bson.Boolean(True)),
       #("conversationId", bson.Int32(cid)),
       #("payload", bson.Binary(bson.Generic(second_payload))),
-    ]),
+    ],
     server_signature,
   )
   |> Ok
