@@ -69,7 +69,6 @@ mongosh --port 2048
 ## Usage
 
 ```gleam
-import gleam/uri
 import gleam/option
 import mungo
 import mungo/crud.{Sort, Upsert}
@@ -79,10 +78,9 @@ import mungo/aggregation.{
 import bison/bson
 
 pub fn main() {
-  let encoded_password = uri.percent_encode("strong password")
   let assert Ok(db) =
-    mungo.connect(
-      "mongodb://app-dev:" <> encoded_password <> "@localhost/app-db?authSource=admin",
+    mungo.start(
+      "mongodb://spawn:fest@localhost:1024,localhost:2048,localhost:4096/mungo?authSource=admin",
     )
 
   let users =
