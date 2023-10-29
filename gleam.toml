@@ -22,6 +22,8 @@ bison = "~> 0.28"
 gleam_bitwise = "~> 1.3"
 gleam_crypto = "~> 0.4"
 gleam_stdlib = "~> 0.31"
+gleam_erlang = "~> 0.22"
+gleam_otp = "~> 0.7"
 
 [dev-dependencies]
 gleeunit = "~> 0.11"

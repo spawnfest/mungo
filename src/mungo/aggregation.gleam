@@ -5,6 +5,7 @@ import gleam/queue
 import mungo/client
 import mungo/cursor
 import bison/bson
+import gleam/erlang/process
 
 pub opaque type Pipeline {
   Pipeline(
@@ -176,7 +177,7 @@ pub fn to_cursor(pipeline: Pipeline) {
       },
     )
 
-  case client.execute(pipeline.collection, body) {
+  case process.call(pipeline.collection.client, client.Message(body, _), 1024) {
     Ok(result) -> {
       let [#("cursor", bson.Document(result)), ..] = result
       let [

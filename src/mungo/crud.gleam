@@ -6,6 +6,7 @@ import mungo/cursor
 import mungo/client
 import bison/bson
 import bison/object_id
+import gleam/erlang/process
 
 pub type FindOption {
   Skip(Int)
@@ -120,23 +121,19 @@ pub fn delete_many(
 }
 
 pub fn count_all(collection: client.Collection) {
-  case
-    collection
-    |> client.execute([#("count", bson.Str(collection.name))])
-  {
+  let cmd = [#("count", bson.Str(collection.name))]
+  case process.call(collection.client, client.Message(cmd, _), 1024) {
     Ok([#("n", bson.Int32(n)), ..]) -> Ok(n)
     Error(error) -> Error(error)
   }
 }
 
 pub fn count(collection: client.Collection, filter: List(#(String, bson.Value))) {
-  case
-    collection
-    |> client.execute([
-      #("count", bson.Str(collection.name)),
-      #("query", bson.Document(filter)),
-    ])
-  {
+  let cmd = [
+    #("count", bson.Str(collection.name)),
+    #("query", bson.Document(filter)),
+  ]
+  case process.call(collection.client, client.Message(cmd, _), 1024) {
     Ok([#("n", bson.Int32(n)), ..]) -> Ok(n)
     Error(error) -> Error(error)
   }
@@ -177,13 +174,12 @@ pub fn insert_many(
       },
     )
 
-  case
-    collection
-    |> client.execute([
-      #("insert", bson.Str(collection.name)),
-      #("documents", bson.Array(docs)),
-    ])
-  {
+  let cmd = [
+    #("insert", bson.Str(collection.name)),
+    #("documents", bson.Array(docs)),
+  ]
+
+  case process.call(collection.client, client.Message(cmd, _), 1024) {
     Ok([#("n", bson.Int32(n)), ..]) -> Ok(InsertResult(n, inserted_ids))
 
     Ok([#("n", _), #("writeErrors", bson.Array(errors)), ..]) -> {
@@ -226,10 +222,7 @@ fn find(
         }
       },
     )
-  case
-    collection
-    |> client.execute(body)
-  {
+  case process.call(collection.client, client.Message(body, _), 1024) {
     Ok(result) -> {
       let [#("cursor", bson.Document(result)), ..] = result
       let assert Ok(bson.Int64(id)) = list.key_find(result, "id")
@@ -271,15 +264,19 @@ fn update(
       },
     )
     |> bson.Document
-  case
-    collection
-    |> client.execute([
-      #("update", bson.Str(collection.name)),
-      #("updates", bson.Array([update])),
-    ])
-  {
-    Ok([#("n", bson.Int32(n)), #("nModified", bson.Int32(modified)), ..]) ->
-      Ok(UpdateResult(n, modified))
+  let cmd = [
+    #("update", bson.Str(collection.name)),
+    #("updates", bson.Array([update])),
+  ]
+
+  case process.call(collection.client, client.Message(cmd, _), 1024) {
+    Ok([
+      #("n", bson.Int32(n)),
+      #("electionId", _),
+      #("opTime", _),
+      #("nModified", bson.Int32(modified)),
+      ..
+    ]) -> Ok(UpdateResult(n, modified))
 
     Ok([
       #("n", bson.Int32(n)),
@@ -315,27 +312,25 @@ fn delete(
   filter: List(#(String, bson.Value)),
   multi: Bool,
 ) {
-  case
-    collection
-    |> client.execute([
-      #("delete", bson.Str(collection.name)),
-      #(
-        "deletes",
-        bson.Array([
-          bson.Document([
-            #("q", bson.Document(filter)),
-            #(
-              "limit",
-              bson.Int32(case multi {
-                True -> 0
-                False -> 1
-              }),
-            ),
-          ]),
+  let cmd = [
+    #("delete", bson.Str(collection.name)),
+    #(
+      "deletes",
+      bson.Array([
+        bson.Document([
+          #("q", bson.Document(filter)),
+          #(
+            "limit",
+            bson.Int32(case multi {
+              True -> 0
+              False -> 1
+            }),
+          ),
         ]),
-      ),
-    ])
-  {
+      ]),
+    ),
+  ]
+  case process.call(collection.client, client.Message(cmd, _), 1024) {
     Ok([#("n", bson.Int32(n)), ..]) -> Ok(n)
 
     Ok([#("n", _), #("writeErrors", bson.Array(errors)), ..]) ->

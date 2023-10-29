@@ -2,8 +2,8 @@ import mungo/crud
 import mungo/client
 import mungo/cursor
 
-pub fn connect(uri) {
-  client.connect(uri)
+pub fn start(uri) {
+  client.start(uri)
 }
 
 pub fn next(cursor) {
@@ -14,9 +14,8 @@ pub fn to_list(cursor) {
   cursor.to_list(cursor)
 }
 
-pub fn collection(db, name) {
-  db
-  |> client.collection(name)
+pub fn collection(client, name) {
+  client.collection(client, name)
 }
 
 pub fn count_all(collection) {

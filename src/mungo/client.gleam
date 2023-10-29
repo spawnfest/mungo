@@ -9,22 +9,70 @@ import gleam/bit_string
 import mungo/tcp
 import mungo/scram
 import mungo/error
+import gleam/otp/actor
+import gleam/erlang/process
 import bison/bson
 import bison.{decode, encode}
+
+pub type Message {
+  Shutdown
+  Message(
+    List(#(String, bson.Value)),
+    process.Subject(Result(List(#(String, bson.Value)), error.MongoError)),
+  )
+}
+
+pub fn start(uri: String) {
+  use client <- result.then(
+    connect(uri)
+    |> result.map_error(fn(error: error.MongoError) {
+      case error {
+        error.ConnectionStringError ->
+          actor.InitFailed(process.Abnormal("Invalid connection string"))
+        error.TCPError(_) ->
+          actor.InitFailed(process.Abnormal("TCP connection error"))
+        _ -> actor.InitFailed(process.Abnormal(""))
+      }
+    }),
+  )
+
+  actor.start(
+    client,
+    fn(msg: Message, client) {
+      case msg {
+        Message(cmd, reply_with) -> {
+          case execute(client, cmd) {
+            Ok(#(result, client)) -> {
+              actor.send(reply_with, Ok(result))
+              actor.continue(client)
+            }
+
+            Error(error) -> {
+              actor.send(reply_with, Error(error))
+              actor.continue(client)
+            }
+          }
+        }
+
+        Shutdown -> actor.Stop(process.Normal)
+      }
+    },
+  )
+}
 
 pub opaque type Connection {
   Connection(socket: tcp.Socket, primary: Bool)
 }
 
-pub opaque type Database {
-  Database(name: String, connections: List(Connection))
+pub opaque type Client {
+  Client(db: String, connections: List(Connection))
 }
 
 pub type Collection {
-  Collection(db: Database, name: String)
+  Collection(name: String, client: process.Subject(Message))
 }
 
-pub fn connect(uri: String) -> Result(Database, error.MongoError) {
+fn connect(uri: String) -> Result(Client, error.MongoError) {
   use info <- result.then(parse_connection_string(uri))
 
   case info {
@@ -37,7 +85,8 @@ pub fn connect(uri: String) -> Result(Database, error.MongoError) {
             |> result.map_error(fn(error) { error.TCPError(error) }),
           )
 
-          Ok(Connection(socket, is_primary(socket, db)))
+          use is_primary <- result.then(is_primary(socket, db))
+          Ok(Connection(socket, is_primary))
         },
       ))
 
@@ -45,7 +94,7 @@ pub fn connect(uri: String) -> Result(Database, error.MongoError) {
         list.find(connections, fn(connection) { connection.primary })
 
       case auth {
-        option.None -> Ok(Database(db, connections))
+        option.None -> Ok(Client(db, connections))
         option.Some(#(username, password, auth_source)) -> {
           use _ <- result.then(authenticate(
             primary_socket,
@@ -54,34 +103,23 @@ pub fn connect(uri: String) -> Result(Database, error.MongoError) {
             auth_source,
           ))
 
-          Ok(Database(db, connections))
+          Ok(Client(db, connections))
         }
       }
     }
   }
 }
 
-pub fn collection(db: Database, name: String) -> Collection {
-  Collection(db, name)
+pub fn collection(client: process.Subject(Message), name: String) -> Collection {
+  Collection(name, client)
 }
 
-pub fn get_more(collection: Collection, id: Int, batch_size: Int) {
-  execute(
-    collection,
-    [
-      #("getMore", bson.Int64(id)),
-      #("collection", bson.Str(collection.name)),
-      #("batchSize", bson.Int32(batch_size)),
-    ],
-  )
-}
-
-pub fn execute(
-  collection: Collection,
+fn execute(
+  client: Client,
   cmd: List(#(String, bson.Value)),
-) -> Result(List(#(String, bson.Value)), error.MongoError) {
-  case collection.db {
-    Database(name, connections) -> {
+) -> Result(#(List(#(String, bson.Value)), Client), error.MongoError) {
+  case client {
+    Client(name, connections) -> {
       let assert Ok(Connection(socket, True)) =
         list.find(connections, fn(connection) { connection.primary })
 
@@ -99,11 +137,25 @@ pub fn execute(
             True ->
               case error.is_not_primary_error(error) {
                 True -> {
+                  use connections <- result.then(
+                    client.connections
+                    |> list.try_map(fn(connection) {
+                      use is_primary <- result.then(is_primary(
+                        connection.socket,
+                        client.db,
+                      ))
+                      Ok(Connection(socket, is_primary))
+                    }),
+                  )
+
                   let assert Ok(Connection(socket, True)) =
                     list.find(
                       connections,
                       fn(connection) {
-                        is_primary(connection.socket, collection.db.name)
+                        case is_primary(connection.socket, client.db) {
+                          Ok(is_primary) -> is_primary
+                          Error(_) -> False
+                        }
                       },
                     )
 
@@ -119,7 +171,7 @@ pub fn execute(
                       Error(error.ServerError(error(msg)))
                     }
 
-                    Ok(result) -> Ok(result)
+                    Ok(result) -> Ok(#(result, client))
                     Error(error) -> Error(error)
                   }
                 }
@@ -137,7 +189,7 @@ pub fn execute(
                       Error(error.ServerError(error(msg)))
                     }
 
-                    Ok(result) -> Ok(result)
+                    Ok(result) -> Ok(#(result, client))
                     Error(error) -> Error(error)
                   }
               }
@@ -145,7 +197,7 @@ pub fn execute(
           }
         }
 
-        Ok(result) -> Ok(result)
+        Ok(result) -> Ok(#(result, client))
         Error(error) -> Error(error)
       }
     }
@@ -159,7 +211,8 @@ fn is_primary(socket: tcp.Socket, db: String) {
         Ok(bson.Boolean(True)) -> True
         _ -> False
       }
-    Error(_) -> False
+      |> Ok
+    Error(error) -> Error(error)
   }
 }
 
@@ -225,7 +278,7 @@ fn send_cmd(
   }
 }
 
-pub fn parse_connection_string(uri: String) {
+fn parse_connection_string(uri: String) {
   use <- bool.guard(
     !string.starts_with(uri, "mongodb://"),
     Error(error.ConnectionStringError),
