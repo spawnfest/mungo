@@ -4,6 +4,7 @@ import gleam/list
 import gleam/queue
 import mungo/client
 import mungo/cursor
+import mungo/error
 import bison/bson
 import gleam/erlang/process
 
@@ -178,18 +179,20 @@ pub fn to_cursor(pipeline: Pipeline) {
     )
 
   case process.call(pipeline.collection.client, client.Message(body, _), 1024) {
-    Ok(result) -> {
-      let [#("cursor", bson.Document(result)), ..] = result
-      let [
-        #("firstBatch", bson.Array(batch)),
-        #("id", bson.Int64(id)),
-        #("ns", _),
-      ] = result
+    Ok(reply) ->
+      case list.key_find(reply, "cursor") {
+        Ok(bson.Document(cursor)) ->
+          case
+            [list.key_find(cursor, "id"), list.key_find(cursor, "firstBatch")]
+          {
+            [Ok(bson.Int64(id)), Ok(bson.Array(batch))] ->
+              cursor.new(pipeline.collection, id, batch)
+              |> Ok
 
-      cursor.new(pipeline.collection, id, batch)
-      |> Ok
-    }
-
+            _ -> Error(error.ReplyError)
+          }
+        _ -> Error(error.ReplyError)
+      }
     Error(error) -> Error(error)
   }
 }

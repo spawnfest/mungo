@@ -42,8 +42,8 @@ pub fn start(uri: String) {
       case msg {
         Message(cmd, reply_with) -> {
           case execute(client, cmd) {
-            Ok(#(result, client)) -> {
-              actor.send(reply_with, Ok(result))
+            Ok(#(reply, client)) -> {
+              actor.send(reply_with, Ok(reply))
               actor.continue(client)
             }
 
@@ -171,7 +171,7 @@ fn execute(
                       Error(error.ServerError(error(msg)))
                     }
 
-                    Ok(result) -> Ok(#(result, client))
+                    Ok(reply) -> Ok(#(reply, client))
                     Error(error) -> Error(error)
                   }
                 }
@@ -189,7 +189,7 @@ fn execute(
                       Error(error.ServerError(error(msg)))
                     }
 
-                    Ok(result) -> Ok(#(result, client))
+                    Ok(reply) -> Ok(#(reply, client))
                     Error(error) -> Error(error)
                   }
               }
@@ -197,7 +197,7 @@ fn execute(
           }
         }
 
-        Ok(result) -> Ok(#(result, client))
+        Ok(reply) -> Ok(#(reply, client))
         Error(error) -> Error(error)
       }
     }
@@ -265,10 +265,10 @@ fn send_cmd(
   case tcp.send(socket, packet) {
     Ok(_) ->
       case tcp.receive(socket) {
-        Ok(response) -> {
-          let <<_:168, rest:bit_string>> = response
+        Ok(reply) -> {
+          let <<_:168, rest:bit_string>> = reply
           case decode(rest) {
-            Ok(result) -> Ok(result)
+            Ok(reply) -> Ok(reply)
             Error(Nil) -> Error(error.BSONError)
           }
         }

@@ -3,6 +3,7 @@ import bison/bson
 
 pub type MongoError {
   BSONError
+  ReplyError
   ConnectionStringError
   TCPError(tcp.TCPError)
   WriteErrors(List(WriteError))

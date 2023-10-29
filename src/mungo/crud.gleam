@@ -26,8 +26,7 @@ pub type InsertResult {
 }
 
 pub type UpdateResult {
-  UpdateResult(matched: Int, modified: Int)
-  UpsertResult(matched: Int, upserted_id: bson.Value)
+  UpdateResult(matched: Int, modified: Int, upserted: List(bson.Value))
 }
 
 pub fn insert_one(collection, doc) {
@@ -123,7 +122,11 @@ pub fn delete_many(
 pub fn count_all(collection: client.Collection) {
   let cmd = [#("count", bson.Str(collection.name))]
   case process.call(collection.client, client.Message(cmd, _), 1024) {
-    Ok([#("n", bson.Int32(n)), ..]) -> Ok(n)
+    Ok(reply) ->
+      case list.key_find(reply, "n") {
+        Ok(bson.Int32(n)) -> Ok(n)
+        Error(Nil) -> Error(error.ReplyError)
+      }
     Error(error) -> Error(error)
   }
 }
@@ -134,7 +137,11 @@ pub fn count(collection: client.Collection, filter: List(#(String, bson.Value)))
     #("query", bson.Document(filter)),
   ]
   case process.call(collection.client, client.Message(cmd, _), 1024) {
-    Ok([#("n", bson.Int32(n)), ..]) -> Ok(n)
+    Ok(reply) ->
+      case list.key_find(reply, "n") {
+        Ok(bson.Int32(n)) -> Ok(n)
+        Error(Nil) -> Error(error.ReplyError)
+      }
     Error(error) -> Error(error)
   }
 }
@@ -180,24 +187,24 @@ pub fn insert_many(
   ]
 
   case process.call(collection.client, client.Message(cmd, _), 1024) {
-    Ok([#("n", bson.Int32(n)), ..]) -> Ok(InsertResult(n, inserted_ids))
-
-    Ok([#("n", _), #("writeErrors", bson.Array(errors)), ..]) -> {
-      Error(error.WriteErrors(
-        errors
-        |> list.map(fn(error) {
-          let assert bson.Document([
-            #("index", _),
-            #("code", bson.Int32(code)),
-            #("keyPattern", _),
-            #("keyValue", source),
-            #("errmsg", bson.Str(msg)),
-          ]) = error
-          error.WriteError(code, msg, source)
-        }),
-      ))
-    }
-
+    Ok(reply) ->
+      case [list.key_find(reply, "n"), list.key_find(reply, "writeErrors")] {
+        [_, Ok(bson.Array(errors))] ->
+          Error(error.WriteErrors(
+            errors
+            |> list.map(fn(error) {
+              let assert bson.Document([
+                #("index", _),
+                #("code", bson.Int32(code)),
+                #("keyPattern", _),
+                #("keyValue", source),
+                #("errmsg", bson.Str(msg)),
+              ]) = error
+              error.WriteError(code, msg, source)
+            }),
+          ))
+        [Ok(bson.Int32(n)), _] -> Ok(InsertResult(n, inserted_ids))
+      }
     Error(error) -> Error(error)
   }
 }
@@ -222,16 +229,22 @@ fn find(
         }
       },
     )
+
   case process.call(collection.client, client.Message(body, _), 1024) {
-    Ok(result) -> {
-      let [#("cursor", bson.Document(result)), ..] = result
-      let assert Ok(bson.Int64(id)) = list.key_find(result, "id")
-      let assert Ok(bson.Array(batch)) = list.key_find(result, "firstBatch")
+    Ok(reply) ->
+      case list.key_find(reply, "cursor") {
+        Ok(bson.Document(cursor)) ->
+          case
+            [list.key_find(cursor, "id"), list.key_find(cursor, "firstBatch")]
+          {
+            [Ok(bson.Int64(id)), Ok(bson.Array(batch))] ->
+              cursor.new(collection, id, batch)
+              |> Ok
 
-      cursor.new(collection, id, batch)
-      |> Ok
-    }
-
+            _ -> Error(error.ReplyError)
+          }
+        _ -> Error(error.ReplyError)
+      }
     Error(error) -> Error(error)
   }
 }
@@ -270,38 +283,42 @@ fn update(
   ]
 
   case process.call(collection.client, client.Message(cmd, _), 1024) {
-    Ok([
-      #("n", bson.Int32(n)),
-      #("electionId", _),
-      #("opTime", _),
-      #("nModified", bson.Int32(modified)),
-      ..
-    ]) -> Ok(UpdateResult(n, modified))
+    Ok(reply) ->
+      case
+        [
+          list.key_find(reply, "n"),
+          list.key_find(reply, "nModified"),
+          list.key_find(reply, "upserted"),
+          list.key_find(reply, "writeErrors"),
+        ]
+      {
+        [
+          Ok(bson.Int32(n)),
+          Ok(bson.Int32(modified)),
+          Ok(bson.Array(upserted)),
+          _,
+        ] -> Ok(UpdateResult(n, modified, upserted))
 
-    Ok([
-      #("n", bson.Int32(n)),
-      #(
-        "upserted",
-        bson.Array([bson.Document([#("index", _), #("_id", upserted)])]),
-      ),
-      #("nModified", _),
-      ..
-    ]) -> Ok(UpsertResult(n, upserted))
+        [Ok(bson.Int32(n)), Ok(bson.Int32(modified))] ->
+          Ok(UpdateResult(n, modified, []))
 
-    Ok([#("n", _), #("writeErrors", bson.Array(errors)), #("nModified", _), ..]) ->
-      Error(error.WriteErrors(
-        errors
-        |> list.map(fn(error) {
-          let assert bson.Document([
-            #("index", _),
-            #("code", bson.Int32(code)),
-            #("keyPattern", _),
-            #("keyValue", source),
-            #("errmsg", bson.Str(msg)),
-          ]) = error
-          error.WriteError(code, msg, source)
-        }),
-      ))
+        [_, _, _, Ok(bson.Array(errors))] ->
+          Error(error.WriteErrors(
+            errors
+            |> list.map(fn(error) {
+              let assert bson.Document([
+                #("index", _),
+                #("code", bson.Int32(code)),
+                #("keyPattern", _),
+                #("keyValue", source),
+                #("errmsg", bson.Str(msg)),
+              ]) = error
+              error.WriteError(code, msg, source)
+            }),
+          ))
+
+        _ -> Error(error.ReplyError)
+      }
 
     Error(error) -> Error(error)
   }
@@ -330,24 +347,27 @@ fn delete(
       ]),
     ),
   ]
+
   case process.call(collection.client, client.Message(cmd, _), 1024) {
-    Ok([#("n", bson.Int32(n)), ..]) -> Ok(n)
-
-    Ok([#("n", _), #("writeErrors", bson.Array(errors)), ..]) ->
-      Error(error.WriteErrors(
-        errors
-        |> list.map(fn(error) {
-          let assert bson.Document([
-            #("index", _),
-            #("code", bson.Int32(code)),
-            #("keyPattern", _),
-            #("keyValue", source),
-            #("errmsg", bson.Str(msg)),
-          ]) = error
-          error.WriteError(code, msg, source)
-        }),
-      ))
-
+    Ok(reply) ->
+      case [list.key_find(reply, "n"), list.key_find(reply, "writeErrors")] {
+        [Ok(bson.Int32(n)), _] -> Ok(n)
+        [_, Ok(bson.Array(errors))] ->
+          Error(error.WriteErrors(
+            errors
+            |> list.map(fn(error) {
+              let assert bson.Document([
+                #("index", _),
+                #("code", bson.Int32(code)),
+                #("keyPattern", _),
+                #("keyValue", source),
+                #("errmsg", bson.Str(msg)),
+              ]) = error
+              error.WriteError(code, msg, source)
+            }),
+          ))
+        _ -> Error(error.ReplyError)
+      }
     Error(error) -> Error(error)
   }
 }

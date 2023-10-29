@@ -78,14 +78,23 @@ fn get_more(cursor: Cursor) -> Result(Cursor, error.MongoError) {
   ]
 
   case process.call(cursor.collection.client, client.Message(cmd, _), 1024) {
-    Ok(result) -> {
-      let [#("cursor", bson.Document(result)), ..] = result
-      let assert Ok(bson.Int64(id)) = list.key_find(result, "id")
-      let assert Ok(bson.Array(batch)) = list.key_find(result, "nextBatch")
-      new(cursor.collection, id, batch)
-      |> Ok
-    }
+    Ok(reply) ->
+      case list.key_find(reply, "cursor") {
+        Ok(bson.Document(reply_cursor)) ->
+          case
+            [
+              list.key_find(reply_cursor, "id"),
+              list.key_find(reply_cursor, "nextBatch"),
+            ]
+          {
+            [Ok(bson.Int64(id)), Ok(bson.Array(batch))] ->
+              new(cursor.collection, id, batch)
+              |> Ok
 
+            _ -> Error(error.ReplyError)
+          }
+        _ -> Error(error.ReplyError)
+      }
     Error(error) -> Error(error)
   }
 }
