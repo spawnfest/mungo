@@ -90,20 +90,18 @@ fn connect(uri: String) -> Result(Client, error.MongoError) {
         },
       ))
 
-      let assert Ok(Connection(primary_socket, _)) =
-        list.find(connections, fn(connection) { connection.primary })
-
       case auth {
         option.None -> Ok(Client(db, connections))
         option.Some(#(username, password, auth_source)) -> {
-          use _ <- result.then(authenticate(
-            primary_socket,
-            username,
-            password,
-            auth_source,
-          ))
-
-          Ok(Client(db, connections))
+          case
+            list.try_each(
+              list.map(connections, fn(connection) { connection.socket }),
+              authenticate(_, username, password, auth_source),
+            )
+          {
+            Ok(_) -> Ok(Client(db, connections))
+            Error(error) -> Error(error)
+          }
         }
       }
     }
