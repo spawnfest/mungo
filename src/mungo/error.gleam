@@ -44,7 +44,7 @@ pub fn is_not_primary_error(error: MongoServerError) -> Bool {
   }
 }
 
-/// https://github.com/mongodb/mongo/blob/34228dcee8b2961fb3f5d84e726210d6faf2ef4f/src/mongo/base/error_codes.yml
+/// https://github.com/mongodb/mongo/blob/master/src/mongo/base/error_codes.yml
 pub type MongoServerError {
   OK(String)
   InternalError(String)
